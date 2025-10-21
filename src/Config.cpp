@@ -22,6 +22,7 @@ namespace SIGA {
         // General settings
         enabled = ini.GetBoolValue("General", "bEnabled", true);
         applyToNPCs = ini.GetBoolValue("General", "bApplyToNPCs", false);
+        logLevel = ini.GetLongValue("General", "iLogLevel", 2);
 
         // Enable/Disable specific debuffs
         enableBowDebuff = ini.GetBoolValue("General", "bEnableBowDebuff", true);
@@ -65,6 +66,8 @@ namespace SIGA {
         ini.SetBoolValue("General", "bEnabled", enabled);
         ini.SetValue("General", nullptr, "; Apply slowdown to NPCs in combat");
         ini.SetBoolValue("General", "bApplyToNPCs", applyToNPCs);
+        ini.SetValue("General", nullptr, "; Log level: 0=trace, 1=debug, 2=info, 3=warn, 4=error, 5=critical");
+        ini.SetLongValue("General", "iLogLevel", logLevel);
 
         ini.SetValue("General", nullptr, "; Enable/Disable specific slowdown types");
         ini.SetBoolValue("General", "bEnableBowDebuff", enableBowDebuff);

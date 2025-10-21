@@ -33,7 +33,7 @@ namespace SIGA {
             bool castLeftActive = false;
             bool castRightActive = false;
             bool dualCastActive = false;
-            float originalSpeedMult = 1.0f;
+            float baseSpeedDelta = 0.0f;  // Changed from originalSpeedMult
             std::chrono::steady_clock::time_point lastCastTime;
         };
 

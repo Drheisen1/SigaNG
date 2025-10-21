@@ -1,5 +1,4 @@
-﻿#include <SKSE/SKSE.h>
-#include "SIGA/AnimationHandler.h"
+﻿#include "SIGA/AnimationHandler.h"
 #include "SIGA/CombatEventHandler.h"  
 #include "SIGA/SlowMotion.h"
 #include "SIGA/Config.h"
@@ -47,12 +46,12 @@ namespace {
             RE::InputEvent* const* a_event,
             RE::BSTEventSource<RE::InputEvent*>* a_eventSource) override
         {
-            
+
             if (g_registered.load()) {
                 return RE::BSEventNotifyControl::kContinue;
             }
 
-            
+
             if (!g_gameLoaded.load()) {
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -61,24 +60,26 @@ namespace {
                 return RE::BSEventNotifyControl::kContinue;
             }
 
-            
+
             if (g_registered.exchange(true)) {
                 return RE::BSEventNotifyControl::kContinue;
             }
 
-            
+
             auto player = RE::PlayerCharacter::GetSingleton();
             if (player) {
                 bool result = player->AddAnimationGraphEventSink(SIGA::AnimationEventHandler::GetSingleton());
                 if (result) {
                     logger::debug("Animation events registered for player");
-                    
-                } else {
-                    
+
+                }
+                else {
+
                     g_registered.store(false);
                 }
-            } else {
-                
+            }
+            else {
+
                 g_registered.store(false);
             }
 
@@ -112,13 +113,15 @@ namespace {
         {
             logger::debug("kDataLoaded message received");
             SIGA::Config::GetSingleton()->Load();
+            spdlog::set_level(static_cast<spdlog::level::level_enum>(SIGA::Config::GetSingleton()->logLevel));
             logger::info("Configuration loaded");
 
             // Register input event handler for player
             if (auto inputManager = RE::BSInputDeviceManager::GetSingleton()) {
                 inputManager->AddEventSink(InputEventHandler::GetSingleton());
                 logger::debug("Input event handler registered");
-            } else {
+            }
+            else {
                 logger::error("Failed to get input device manager");
             }
 
@@ -126,10 +129,11 @@ namespace {
             if (auto scriptEventSource = RE::ScriptEventSourceHolder::GetSingleton()) {
                 scriptEventSource->AddEventSink(SIGA::CombatEventHandler::GetSingleton());
                 logger::debug("Combat event handler registered for NPC tracking");
-            } else {
+            }
+            else {
                 logger::error("Failed to get script event source");
             }
-            
+
             break;
         }
 
@@ -138,7 +142,7 @@ namespace {
         {
             logger::debug("kPostLoadGame/kNewGame message received");
 
-            
+
             g_registered.store(false);
             g_gameLoaded.store(true);
 
