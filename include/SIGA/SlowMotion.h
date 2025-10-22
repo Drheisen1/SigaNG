@@ -20,6 +20,7 @@ namespace SIGA {
         void RemoveSlowdown(RE::Actor* actor, SlowType type);
         void ClearAllSlowdowns(RE::Actor* actor);
         void ClearAll();
+        void CleanupInactiveStates();
 
         bool IsActorSlowed(RE::Actor* actor);
 
@@ -35,6 +36,7 @@ namespace SIGA {
             bool dualCastActive = false;
             float baseSpeedDelta = 0.0f;  // Changed from originalSpeedMult
             std::chrono::steady_clock::time_point lastCastTime;
+            float expectedSpeed = 100.0f;
         };
 
         std::unordered_map<RE::FormID, ActorSlowState> actorStates;

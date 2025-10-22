@@ -94,13 +94,21 @@ namespace SIGA {
             }
         }
 
-        // WEAPON DRAW/SHEATHE EVENTS (fixes R key not clearing slowdowns)
-        else if (eventName == "weaponSheathe") {
-            // Clear all slowdowns when weapon state changes
+        // WEAPON DRAW/SHEATHE EVENTS
+        else if (eventName == "WeaponSheathe" || eventName == "weaponSheathe") {
+
+            // Clear slowdowns
             if (slowMgr->IsActorSlowed(actor)) {
                 logger::debug("Weapon state changed - clearing slowdowns");
                 slowMgr->ClearAllSlowdowns(actor);
             }
+        }
+
+
+        static int cleanupCounter = 0;
+        if (++cleanupCounter >= 100) {
+            SlowMotionManager::GetSingleton()->CleanupInactiveStates();
+            cleanupCounter = 0;
         }
 
         return RE::BSEventNotifyControl::kContinue;

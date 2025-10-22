@@ -17,10 +17,23 @@ namespace SIGA {
         auto formID = actor->GetFormID();
         auto& state = actorStates[formID];
 
+        // Only capture delta if this is the FIRST slowdown
         if (!IsActorSlowed(actor)) {
             float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-            state.baseSpeedDelta = currentSpeed - 100.0f;
-            logger::debug("Captured speed delta: {} (current speed: {})", state.baseSpeedDelta, currentSpeed);
+
+            // SAFEGUARD - Reject obviously corrupted speeds
+            if (currentSpeed < 50.0f) {
+                logger::warn("Detected corrupted speed ({}) - using base 100", currentSpeed);
+                state.baseSpeedDelta = 0.0f;
+            }
+            else {
+                state.baseSpeedDelta = currentSpeed - 100.0f;
+                logger::debug("Captured speed delta: {} (current speed: {})", state.baseSpeedDelta, currentSpeed);
+            }
+        }
+        else {
+            // Already slowed - keep existing delta, DON'T recapture
+            logger::debug("Already slowed, keeping cached delta: {}", state.baseSpeedDelta);
         }
 
         logger::debug("ApplySlowdown: type={}, skillLevel={}", static_cast<int>(type), skillLevel);
@@ -50,10 +63,11 @@ namespace SIGA {
         float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
         float speedChange = targetSpeed - currentSpeed;
 
-        // fix -> apply value modifier instead of set speed.
         actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
             RE::ActorValue::kSpeedMult, speedChange);
         logger::debug("Applied {} speed change (from {} to {})", speedChange, currentSpeed, targetSpeed);
+
+        state.expectedSpeed = targetSpeed;
     }
 
     void SlowMotionManager::RemoveSlowdown(RE::Actor* actor, SlowType type) {
@@ -94,7 +108,8 @@ namespace SIGA {
                 RE::ActorValue::kSpeedMult, speedChange);
             logger::debug("Restored speed by {} (from {} to {})", speedChange, currentSpeed, targetSpeed);
 
-            actorStates.erase(it);
+            state.expectedSpeed = targetSpeed;
+            state.lastCastTime = std::chrono::steady_clock::now();
         }
         else {
             SlowType activeType;
@@ -153,6 +168,49 @@ namespace SIGA {
         }
     }
 
+    void SlowMotionManager::CleanupInactiveStates() {
+        auto now = std::chrono::steady_clock::now();
+
+        for (auto it = actorStates.begin(); it != actorStates.end();) {
+            auto formID = it->first;
+            auto& state = it->second;
+            auto actor = RE::TESForm::LookupByID<RE::Actor>(formID);
+
+            // Only check states where NO slowdowns are active
+            if (!state.bowSlowActive && !state.castLeftActive &&
+                !state.castRightActive && !state.dualCastActive) {
+
+                bool shouldClear = false;
+
+                // Idle for 3+ seconds
+                auto idleSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - state.lastCastTime).count();
+                if (idleSeconds >= 3) {
+                    shouldClear = true;
+                }
+
+                // External speed change detected
+                if (actor) {
+                    float actualSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
+                    float speedDiff = std::abs(actualSpeed - state.expectedSpeed);
+
+                    // If speed changed by more than 0.1, something external modified it
+                    if (speedDiff > 0.1f) {
+                        logger::debug("External speed change detected (expected: {}, actual: {}) - clearing delta",
+                            state.expectedSpeed, actualSpeed);
+                        shouldClear = true;
+                    }
+                }
+
+                if (shouldClear) {
+                    it = actorStates.erase(it);
+                    continue;
+                }
+            }
+            ++it;
+        }
+    }
+
     void SlowMotionManager::ClearAllSlowdowns(RE::Actor* actor) {
         if (!actor) return;
 
@@ -162,13 +220,11 @@ namespace SIGA {
 
         float targetSpeed = 100.0f + it->second.baseSpeedDelta;
         float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-        float speedToRestore = targetSpeed - currentSpeed;
+        float speedChange = targetSpeed - currentSpeed;
 
-        if (speedToRestore > 0) {
-            actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-                RE::ActorValue::kSpeedMult, speedToRestore);
-            logger::debug("Cleared all: restored by {} (from {} to {})", speedToRestore, currentSpeed, targetSpeed);
-        }
+        actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+            RE::ActorValue::kSpeedMult, speedChange);
+        logger::debug("Cleared all: changed speed by {} (from {} to {})", speedChange, currentSpeed, targetSpeed);
 
         actorStates.erase(it);
     }
@@ -178,12 +234,10 @@ namespace SIGA {
             if (auto actor = RE::TESForm::LookupByID<RE::Actor>(formID)) {
                 float targetSpeed = 100.0f + state.baseSpeedDelta;
                 float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-                float speedToRestore = targetSpeed - currentSpeed;
+                float speedChange = targetSpeed - currentSpeed;
 
-                if (speedToRestore > 0) {
-                    actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-                        RE::ActorValue::kSpeedMult, speedToRestore);
-                }
+                actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+                    RE::ActorValue::kSpeedMult, speedChange);
             }
         }
         actorStates.clear();
