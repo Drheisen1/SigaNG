@@ -16,6 +16,7 @@ namespace SIGA {
         // General settings
         bool enabled = true;
         bool applyToNPCs = false;
+        bool applySlowdownCastingToNPCsOnly = false;  // If true, casting slowdown applies to NPCs only, not player
         int logLevel = 2;  // 0=trace, 1=debug, 2=info, 3=warn, 4=error, 5=critical
 
         // Enable/Disable specific debuffs

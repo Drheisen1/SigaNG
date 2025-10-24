@@ -1,8 +1,37 @@
 #include "SIGA/AnimationHandler.h"
 #include "SIGA/SlowMotion.h"
 #include "SIGA/Config.h"
+#include <unordered_map>
 
 namespace SIGA {
+
+    // OPTIMIZATION: Event type enum for fast switch instead of string comparisons
+    enum class AnimEventType {
+        Unknown,
+        BowDrawn,
+        BowRelease,
+        BeginCastLeft,
+        BeginCastRight,
+        CastStop,
+        CastOKStop,
+        InterruptCast,
+        AttackStop,
+        WeaponSheathe,
+    };
+
+    // OPTIMIZATION: Hash map for O(1) event lookup instead of O(n) string comparisons
+    static const std::unordered_map<std::string_view, AnimEventType> EVENT_LOOKUP = {
+        {"BowDrawn", AnimEventType::BowDrawn},
+        {"bowRelease", AnimEventType::BowRelease},
+        {"BeginCastLeft", AnimEventType::BeginCastLeft},
+        {"BeginCastRight", AnimEventType::BeginCastRight},
+        {"CastStop", AnimEventType::CastStop},
+        {"CastOKStop", AnimEventType::CastOKStop},
+        {"InterruptCast", AnimEventType::InterruptCast},
+        {"attackStop", AnimEventType::AttackStop},
+        {"WeaponSheathe", AnimEventType::WeaponSheathe},
+        {"weaponSheathe", AnimEventType::WeaponSheathe},
+    };
 
     AnimationEventHandler* AnimationEventHandler::GetSingleton() {
         static AnimationEventHandler singleton;
@@ -44,70 +73,76 @@ namespace SIGA {
         }
 
         std::string_view eventName = a_event->tag;
-        auto slowMgr = SlowMotionManager::GetSingleton();
 
-        // Log only important events
+        // OPTIMIZATION: Single hash lookup instead of multiple string comparisons
+        auto eventIt = EVENT_LOOKUP.find(eventName);
+        if (eventIt == EVENT_LOOKUP.end()) {
+            // Unknown event, ignore
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
         logger::trace("Animation event: '{}' from {}", eventName, isPlayer ? "Player" : actor->GetName());
 
-        // BOW EVENTS
-        if (eventName == "BowDrawn") {
-            logger::debug("BowDrawn event");
+        auto slowMgr = SlowMotionManager::GetSingleton();
+
+        // OPTIMIZATION: Switch on enum instead of string comparisons
+        switch (eventIt->second) {
+        case AnimEventType::BowDrawn:
+            logger::debug("Bow drawn event");
             OnBowDrawn(actor);
-        }
-        else if (eventName == "bowRelease") {
+            break;
+
+        case AnimEventType::BowRelease:
             logger::debug("Bow release event");
             slowMgr->RemoveSlowdown(actor, SlowType::Bow);
             slowMgr->RemoveSlowdown(actor, SlowType::Crossbow);
-        }
+            break;
 
-        // CASTING EVENTS
-        else if (eventName == "BeginCastLeft") {
+        case AnimEventType::BeginCastLeft:
             logger::debug("BeginCastLeft event");
             OnBeginCastLeft(actor);
-        }
-        else if (eventName == "BeginCastRight") {
+            break;
+
+        case AnimEventType::BeginCastRight:
             logger::debug("BeginCastRight event");
             OnBeginCastRight(actor);
-        }
+            break;
 
-        // Add CastStop event
-        else if (eventName == "CastStop") {
+        case AnimEventType::CastStop:
             logger::debug("CastStop event");
             OnCastRelease(actor);
-        }
+            break;
 
-        // Additional cast stop events
-        else if (eventName == "CastOKStop" || eventName == "InterruptCast") {
-            // Only process if actor is actually slowed
+        case AnimEventType::CastOKStop:
+        case AnimEventType::InterruptCast:
             if (slowMgr->IsActorSlowed(actor)) {
                 logger::debug("Cast interrupted: {}", eventName);
                 OnCastRelease(actor);
             }
-        }
+            break;
 
-        // GENERIC CLEANUP 
-        else if (eventName == "attackStop") {
-            // Only clear slowdowns if we're actually slowed
+        case AnimEventType::AttackStop:
             if (slowMgr->IsActorSlowed(actor)) {
-                logger::debug("attackStop while slowed - safety cleanup");
+                logger::debug("attackStop while slowed - clearing slowdowns");
                 OnAttackStop(actor);
             }
-        }
+            break;
 
-        // WEAPON DRAW/SHEATHE EVENTS
-        else if (eventName == "WeaponSheathe" || eventName == "weaponSheathe") {
-
-            // Clear slowdowns
+        case AnimEventType::WeaponSheathe:
             if (slowMgr->IsActorSlowed(actor)) {
                 logger::debug("Weapon state changed - clearing slowdowns");
                 slowMgr->ClearAllSlowdowns(actor);
             }
+            break;
+
+        default:
+            break;
         }
 
-
+        // Periodic cleanup of inactive slowdown states
         static int cleanupCounter = 0;
         if (++cleanupCounter >= 100) {
-            SlowMotionManager::GetSingleton()->CleanupInactiveStates();
+            slowMgr->CleanupInactiveStates();
             cleanupCounter = 0;
         }
 
@@ -116,6 +151,24 @@ namespace SIGA {
 
     void AnimationEventHandler::OnBowDrawn(RE::Actor* actor) {
         auto config = Config::GetSingleton();
+
+        bool isPlayer = actor->IsPlayerRef();
+
+        // Check if slowdown should apply based on actor type
+        if (config->applySlowdownCastingToNPCsOnly) {
+            // NPCs only mode - skip player
+            if (isPlayer) {
+                logger::trace("Bow slowdown skipped for player (NPCs only mode)");
+                return;
+            }
+        }
+        else {
+            // Normal mode - NPCs need applyToNPCs enabled
+            if (!isPlayer && !config->applyToNPCs) {
+                logger::trace("Bow slowdown disabled for NPCs");
+                return;
+            }
+        }
 
         float archerySkill = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kArchery);
 
@@ -152,13 +205,30 @@ namespace SIGA {
             return;
         }
 
+        bool isPlayer = actor->IsPlayerRef();
+
+        // Check if casting slowdown should apply based on actor type
+        if (config->applySlowdownCastingToNPCsOnly) {
+            // NPCs only mode - skip player
+            if (isPlayer) {
+                logger::trace("Casting slowdown skipped for player (NPCs only mode)");
+                return;
+            }
+        }
+        else {
+            // Normal mode - NPCs need applyToNPCs enabled
+            if (!isPlayer && !config->applyToNPCs) {
+                logger::trace("Casting slowdown disabled for NPCs");
+                return;
+            }
+        }
+
         auto leftSpell = actor->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kLeftHand];
         if (!leftSpell) {
             logger::debug("No spell in left hand");
             return;
         }
 
-        // Check if spell modifies SpeedMult - if so, skip slowdown
         if (SpellModifiesSpeed(leftSpell)) {
             logger::debug("Left spell modifies speed - skipping slowdown");
             return;
@@ -175,13 +245,30 @@ namespace SIGA {
             return;
         }
 
+        bool isPlayer = actor->IsPlayerRef();
+
+        // Check if casting slowdown should apply based on actor type
+        if (config->applySlowdownCastingToNPCsOnly) {
+            // NPCs only mode - skip player
+            if (isPlayer) {
+                logger::trace("Casting slowdown skipped for player (NPCs only mode)");
+                return;
+            }
+        }
+        else {
+            // Normal mode - NPCs need applyToNPCs enabled
+            if (!isPlayer && !config->applyToNPCs) {
+                logger::trace("Casting slowdown disabled for NPCs");
+                return;
+            }
+        }
+
         auto rightSpell = actor->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
         if (!rightSpell) {
             logger::debug("No spell in right hand");
             return;
         }
 
-        // Check if spell modifies SpeedMult - if so, skip slowdown
         if (SpellModifiesSpeed(rightSpell)) {
             logger::debug("Right spell modifies speed - skipping slowdown");
             return;
@@ -193,7 +280,6 @@ namespace SIGA {
     }
 
     void AnimationEventHandler::OnCastRelease(RE::Actor* actor) {
-        // remove all casting slowdowns when cast stops
         auto slowMgr = SlowMotionManager::GetSingleton();
         slowMgr->RemoveSlowdown(actor, SlowType::CastLeft);
         slowMgr->RemoveSlowdown(actor, SlowType::CastRight);
@@ -208,7 +294,6 @@ namespace SIGA {
     float AnimationEventHandler::GetMagicSkillLevel(RE::Actor* actor, RE::MagicItem* spell) {
         if (!spell) return 0.0f;
 
-        // try to cast to SpellItem
         auto spellItem = spell->As<RE::SpellItem>();
         if (!spellItem) {
             logger::warn("Could not cast spell to SpellItem");
@@ -238,10 +323,8 @@ namespace SIGA {
         auto spellItem = spell->As<RE::SpellItem>();
         if (!spellItem) return false;
 
-        // Check all magic effects in the spell
         for (auto effect : spellItem->effects) {
             if (effect && effect->baseEffect) {
-                // Check if effect modifies SpeedMult actor value
                 if (effect->baseEffect->data.primaryAV == RE::ActorValue::kSpeedMult) {
                     return true;
                 }
@@ -251,4 +334,4 @@ namespace SIGA {
         return false;
     }
 
-} 
+}

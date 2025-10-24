@@ -15,14 +15,16 @@ namespace SIGA {
         }
 
         auto formID = actor->GetFormID();
-        auto& state = actorStates[formID];
+        // OPTIMIZATION: Use try_emplace instead of operator[] to avoid double hash lookup
+        auto [it, inserted] = actorStates.try_emplace(formID);
+        auto& state = it->second;
 
         // Only capture delta if this is the FIRST slowdown
         if (!IsActorSlowed(actor)) {
             float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
 
             // SAFEGUARD - Reject obviously corrupted speeds
-            if (currentSpeed < 50.0f) {
+            if (currentSpeed < 20.0f) {
                 logger::warn("Detected corrupted speed ({}) - using base 100", currentSpeed);
                 state.baseSpeedDelta = 0.0f;
             }
