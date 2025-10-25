@@ -139,13 +139,6 @@ namespace SIGA {
             break;
         }
 
-        // Periodic cleanup of inactive slowdown states
-        static int cleanupCounter = 0;
-        if (++cleanupCounter >= 100) {
-            slowMgr->CleanupInactiveStates();
-            cleanupCounter = 0;
-        }
-
         return RE::BSEventNotifyControl::kContinue;
     }
 

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Mods/Source/CommonLibSSE-NG-main/include/**)",
+      "Read(//c/Mods/Source/CommonLibSSE-NG-main/include/RE/T/**)",
+      "Read(//c/Mods/Source/CommonLibSSE-NG-main/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

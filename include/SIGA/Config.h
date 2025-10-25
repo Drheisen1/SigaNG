@@ -31,6 +31,15 @@ namespace SIGA {
         std::array<float, 4> castMultipliers = { 0.5f, 0.6f, 0.7f, 0.8f };
         std::array<float, 4> dualCastMultipliers = { 0.4f, 0.5f, 0.6f, 0.7f };
 
+        // Plugin configuration
+        std::string pluginName = "SigaNG.esp";
+
+        // Spell Form IDs (hex values - last 12 bits for ESL plugins)
+        RE::FormID bowDebuffSpellID = 0x801;
+        RE::FormID castingDebuffSpellID = 0x805;
+        RE::FormID dualCastDebuffSpellID = 0x806;
+        RE::FormID crossbowDebuffSpellID = 0x807;
+
     private:
         Config() = default;
         Config(const Config&) = delete;

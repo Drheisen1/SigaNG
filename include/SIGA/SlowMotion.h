@@ -1,7 +1,7 @@
 #pragma once
 
 #include <unordered_map>
-#include <chrono>
+#include <mutex>
 
 namespace SIGA {
     enum class SlowType {
@@ -16,11 +16,13 @@ namespace SIGA {
     public:
         static SlowMotionManager* GetSingleton();
 
+        // Initialize spell lookups
+        bool Initialize();
+
         void ApplySlowdown(RE::Actor* actor, SlowType type, float skillLevel);
         void RemoveSlowdown(RE::Actor* actor, SlowType type);
         void ClearAllSlowdowns(RE::Actor* actor);
         void ClearAll();
-        void CleanupInactiveStates();
 
         bool IsActorSlowed(RE::Actor* actor);
 
@@ -34,14 +36,20 @@ namespace SIGA {
             bool castLeftActive = false;
             bool castRightActive = false;
             bool dualCastActive = false;
-            float baseSpeedDelta = 0.0f;  // Changed from originalSpeedMult
-            std::chrono::steady_clock::time_point lastCastTime;
-            float expectedSpeed = 100.0f;
         };
 
         std::unordered_map<RE::FormID, ActorSlowState> actorStates;
+        mutable std::mutex actorStatesMutex;
 
-        float CalculateSpeedMultiplier(float skillLevel, SlowType type);
-        void ApplySpeedMultiplier(RE::Actor* actor, float mult);
+        // Cached spell pointers
+        RE::SpellItem* bowDebuffSpell = nullptr;
+        RE::SpellItem* castingDebuffSpell = nullptr;
+        RE::SpellItem* dualCastDebuffSpell = nullptr;
+        RE::SpellItem* crossbowDebuffSpell = nullptr;
+
+        float CalculateMagnitude(float skillLevel, SlowType type);
+        void ApplySpellWithMagnitude(RE::Actor* actor, RE::SpellItem* spell, float magnitude);
+        void RemoveSpell(RE::Actor* actor, RE::SpellItem* spell);
+        bool IsActorSlowedInternal(RE::FormID formID) const;
     };
 }

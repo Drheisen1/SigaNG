@@ -8,72 +8,111 @@ namespace SIGA {
         return &singleton;
     }
 
+    bool SlowMotionManager::Initialize() {
+        auto config = Config::GetSingleton();
+        auto dataHandler = RE::TESDataHandler::GetSingleton();
+        if (!dataHandler) {
+            logger::error("Failed to get TESDataHandler");
+            return false;
+        }
+
+        const char* pluginName = config->pluginName.c_str();
+
+        // Look up spells from the plugin
+        bowDebuffSpell = dataHandler->LookupForm<RE::SpellItem>(config->bowDebuffSpellID, pluginName);
+        castingDebuffSpell = dataHandler->LookupForm<RE::SpellItem>(config->castingDebuffSpellID, pluginName);
+        dualCastDebuffSpell = dataHandler->LookupForm<RE::SpellItem>(config->dualCastDebuffSpellID, pluginName);
+        crossbowDebuffSpell = dataHandler->LookupForm<RE::SpellItem>(config->crossbowDebuffSpellID, pluginName);
+
+        // Verify all spells loaded
+        bool success = true;
+        if (!bowDebuffSpell) {
+            logger::error("Failed to load bow debuff spell (0x{:X})", config->bowDebuffSpellID);
+            success = false;
+        }
+        if (!castingDebuffSpell) {
+            logger::error("Failed to load casting debuff spell (0x{:X})", config->castingDebuffSpellID);
+            success = false;
+        }
+        if (!dualCastDebuffSpell) {
+            logger::error("Failed to load dual cast debuff spell (0x{:X})", config->dualCastDebuffSpellID);
+            success = false;
+        }
+        if (!crossbowDebuffSpell) {
+            logger::error("Failed to load crossbow debuff spell (0x{:X})", config->crossbowDebuffSpellID);
+            success = false;
+        }
+
+        if (success) {
+            logger::info("All debuff spells loaded successfully");
+        }
+
+        return success;
+    }
+
     void SlowMotionManager::ApplySlowdown(RE::Actor* actor, SlowType type, float skillLevel) {
         if (!actor) {
             logger::warn("ApplySlowdown called with null actor");
             return;
         }
 
+        std::lock_guard<std::mutex> lock(actorStatesMutex);
+
         auto formID = actor->GetFormID();
-        // OPTIMIZATION: Use try_emplace instead of operator[] to avoid double hash lookup
         auto [it, inserted] = actorStates.try_emplace(formID);
         auto& state = it->second;
 
-        // Only capture delta if this is the FIRST slowdown
-        if (!IsActorSlowed(actor)) {
-            float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-
-            // SAFEGUARD - Reject obviously corrupted speeds
-            if (currentSpeed < 20.0f) {
-                logger::warn("Detected corrupted speed ({}) - using base 100", currentSpeed);
-                state.baseSpeedDelta = 0.0f;
-            }
-            else {
-                state.baseSpeedDelta = currentSpeed - 100.0f;
-                logger::debug("Captured speed delta: {} (current speed: {})", state.baseSpeedDelta, currentSpeed);
-            }
-        }
-        else {
-            // Already slowed - keep existing delta, DON'T recapture
-            logger::debug("Already slowed, keeping cached delta: {}", state.baseSpeedDelta);
-        }
-
         logger::debug("ApplySlowdown: type={}, skillLevel={}", static_cast<int>(type), skillLevel);
+
+        // Determine which spell to use
+        RE::SpellItem* spellToApply = nullptr;
+        bool isDualCast = false;
 
         switch (type) {
         case SlowType::Bow:
+            state.bowSlowActive = true;
+            spellToApply = bowDebuffSpell;
+            break;
         case SlowType::Crossbow:
             state.bowSlowActive = true;
+            spellToApply = crossbowDebuffSpell;
             break;
         case SlowType::CastLeft:
             state.castLeftActive = true;
+            spellToApply = castingDebuffSpell;
             break;
         case SlowType::CastRight:
             state.castRightActive = true;
+            spellToApply = castingDebuffSpell;
             break;
         }
 
-        SlowType typeToUse = type;
+        // Check for dual cast
         if (state.castLeftActive && state.castRightActive) {
             state.dualCastActive = true;
-            typeToUse = SlowType::DualCast;
+            isDualCast = true;
+            spellToApply = dualCastDebuffSpell;
+            type = SlowType::DualCast;
             logger::debug("Dual casting detected!");
         }
 
-        float multiplier = CalculateSpeedMultiplier(skillLevel, typeToUse);
-        float targetSpeed = (100.0f * multiplier) + state.baseSpeedDelta;
-        float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-        float speedChange = targetSpeed - currentSpeed;
+        if (!spellToApply) {
+            logger::error("No spell found for slowdown type {}", static_cast<int>(type));
+            return;
+        }
 
-        actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-            RE::ActorValue::kSpeedMult, speedChange);
-        logger::debug("Applied {} speed change (from {} to {})", speedChange, currentSpeed, targetSpeed);
+        // Calculate magnitude based on skill level
+        float magnitude = CalculateMagnitude(skillLevel, type);
 
-        state.expectedSpeed = targetSpeed;
+        // Apply the spell with the calculated magnitude
+        logger::debug("Applying {} to actor (magnitude: {})", spellToApply->GetName(), magnitude);
+        ApplySpellWithMagnitude(actor, spellToApply, magnitude);
     }
 
     void SlowMotionManager::RemoveSlowdown(RE::Actor* actor, SlowType type) {
         if (!actor) return;
+
+        std::lock_guard<std::mutex> lock(actorStatesMutex);
 
         auto formID = actor->GetFormID();
         auto it = actorStates.find(formID);
@@ -81,6 +120,7 @@ namespace SIGA {
 
         auto& state = it->second;
 
+        // Update state flags
         switch (type) {
         case SlowType::Bow:
         case SlowType::Crossbow:
@@ -97,149 +137,61 @@ namespace SIGA {
             break;
         }
 
+        // If both cast hands are released, disable dual cast
         if (!state.castLeftActive || !state.castRightActive) {
             state.dualCastActive = false;
         }
 
-        if (!IsActorSlowed(actor)) {
-            float targetSpeed = 100.0f + state.baseSpeedDelta;
-            float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-            float speedChange = targetSpeed - currentSpeed;
-
-            actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-                RE::ActorValue::kSpeedMult, speedChange);
-            logger::debug("Restored speed by {} (from {} to {})", speedChange, currentSpeed, targetSpeed);
-
-            state.expectedSpeed = targetSpeed;
-            state.lastCastTime = std::chrono::steady_clock::now();
+        // Remove all active spells
+        if (state.bowSlowActive) {
+            RemoveSpell(actor, bowDebuffSpell);
+            RemoveSpell(actor, crossbowDebuffSpell);
         }
-        else {
-            SlowType activeType;
-            float skillLevel = 0.0f;
-
-            if (state.bowSlowActive) {
-                activeType = SlowType::Bow;
-                skillLevel = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kArchery);
-            }
-            else if (state.dualCastActive) {
-                activeType = SlowType::DualCast;
-                auto spell = actor->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kLeftHand];
-                if (!spell) spell = actor->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
-                if (spell) {
-                    auto spellItem = spell->As<RE::SpellItem>();
-                    if (spellItem) {
-                        auto school = spellItem->GetAssociatedSkill();
-                        skillLevel = (school != RE::ActorValue::kNone)
-                            ? actor->AsActorValueOwner()->GetActorValue(school) : 50.0f;
-                    }
-                }
-            }
-            else if (state.castLeftActive) {
-                activeType = SlowType::CastLeft;
-                auto spell = actor->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kLeftHand];
-                if (spell) {
-                    auto spellItem = spell->As<RE::SpellItem>();
-                    if (spellItem) {
-                        auto school = spellItem->GetAssociatedSkill();
-                        skillLevel = (school != RE::ActorValue::kNone)
-                            ? actor->AsActorValueOwner()->GetActorValue(school) : 50.0f;
-                    }
-                }
-            }
-            else if (state.castRightActive) {
-                activeType = SlowType::CastRight;
-                auto spell = actor->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
-                if (spell) {
-                    auto spellItem = spell->As<RE::SpellItem>();
-                    if (spellItem) {
-                        auto school = spellItem->GetAssociatedSkill();
-                        skillLevel = (school != RE::ActorValue::kNone)
-                            ? actor->AsActorValueOwner()->GetActorValue(school) : 50.0f;
-                    }
-                }
-            }
-
-            float multiplier = CalculateSpeedMultiplier(skillLevel, activeType);
-            float targetSpeed = (100.0f * multiplier) + state.baseSpeedDelta;
-            float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-            float speedChange = targetSpeed - currentSpeed;
-
-            actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-                RE::ActorValue::kSpeedMult, speedChange);
-            logger::debug("Recalculated: changed speed by {} (from {} to {})", speedChange, currentSpeed, targetSpeed);
+        if (state.dualCastActive) {
+            RemoveSpell(actor, dualCastDebuffSpell);
+        } else if (state.castLeftActive || state.castRightActive) {
+            RemoveSpell(actor, castingDebuffSpell);
+        } else {
+            // No casting active, remove casting spells
+            RemoveSpell(actor, castingDebuffSpell);
+            RemoveSpell(actor, dualCastDebuffSpell);
         }
-    }
 
-    void SlowMotionManager::CleanupInactiveStates() {
-        auto now = std::chrono::steady_clock::now();
-
-        for (auto it = actorStates.begin(); it != actorStates.end();) {
-            auto formID = it->first;
-            auto& state = it->second;
-            auto actor = RE::TESForm::LookupByID<RE::Actor>(formID);
-
-            // Only check states where NO slowdowns are active
-            if (!state.bowSlowActive && !state.castLeftActive &&
-                !state.castRightActive && !state.dualCastActive) {
-
-                bool shouldClear = false;
-
-                // Idle for 3+ seconds
-                auto idleSeconds = std::chrono::duration_cast<std::chrono::seconds>(
-                    now - state.lastCastTime).count();
-                if (idleSeconds >= 3) {
-                    shouldClear = true;
-                }
-
-                // External speed change detected
-                if (actor) {
-                    float actualSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-                    float speedDiff = std::abs(actualSpeed - state.expectedSpeed);
-
-                    // If speed changed by more than 0.1, something external modified it
-                    if (speedDiff > 0.1f) {
-                        logger::debug("External speed change detected (expected: {}, actual: {}) - clearing delta",
-                            state.expectedSpeed, actualSpeed);
-                        shouldClear = true;
-                    }
-                }
-
-                if (shouldClear) {
-                    it = actorStates.erase(it);
-                    continue;
-                }
-            }
-            ++it;
+        // If no slowdowns are active, clean up state
+        if (!IsActorSlowedInternal(formID)) {
+            actorStates.erase(it);
+            logger::debug("Removed all slowdowns for actor");
         }
     }
 
     void SlowMotionManager::ClearAllSlowdowns(RE::Actor* actor) {
         if (!actor) return;
 
+        std::lock_guard<std::mutex> lock(actorStatesMutex);
+
         auto formID = actor->GetFormID();
         auto it = actorStates.find(formID);
         if (it == actorStates.end()) return;
 
-        float targetSpeed = 100.0f + it->second.baseSpeedDelta;
-        float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-        float speedChange = targetSpeed - currentSpeed;
-
-        actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-            RE::ActorValue::kSpeedMult, speedChange);
-        logger::debug("Cleared all: changed speed by {} (from {} to {})", speedChange, currentSpeed, targetSpeed);
+        // Remove all spell effects
+        RemoveSpell(actor, bowDebuffSpell);
+        RemoveSpell(actor, crossbowDebuffSpell);
+        RemoveSpell(actor, castingDebuffSpell);
+        RemoveSpell(actor, dualCastDebuffSpell);
 
         actorStates.erase(it);
+        logger::debug("Cleared all slowdowns for actor");
     }
 
     void SlowMotionManager::ClearAll() {
+        std::lock_guard<std::mutex> lock(actorStatesMutex);
+
         for (auto& [formID, state] : actorStates) {
             if (auto actor = RE::TESForm::LookupByID<RE::Actor>(formID)) {
-                float targetSpeed = 100.0f + state.baseSpeedDelta;
-                float currentSpeed = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult);
-                float speedChange = targetSpeed - currentSpeed;
-
-                actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-                    RE::ActorValue::kSpeedMult, speedChange);
+                RemoveSpell(actor, bowDebuffSpell);
+                RemoveSpell(actor, crossbowDebuffSpell);
+                RemoveSpell(actor, castingDebuffSpell);
+                RemoveSpell(actor, dualCastDebuffSpell);
             }
         }
         actorStates.clear();
@@ -247,7 +199,14 @@ namespace SIGA {
     }
 
     bool SlowMotionManager::IsActorSlowed(RE::Actor* actor) {
-        auto it = actorStates.find(actor->GetFormID());
+        if (!actor) return false;
+
+        std::lock_guard<std::mutex> lock(actorStatesMutex);
+        return IsActorSlowedInternal(actor->GetFormID());
+    }
+
+    bool SlowMotionManager::IsActorSlowedInternal(RE::FormID formID) const {
+        auto it = actorStates.find(formID);
         if (it == actorStates.end()) return false;
 
         auto& state = it->second;
@@ -255,32 +214,83 @@ namespace SIGA {
             state.castRightActive || state.dualCastActive;
     }
 
-    float SlowMotionManager::CalculateSpeedMultiplier(float skillLevel, SlowType type) {
+    float SlowMotionManager::CalculateMagnitude(float skillLevel, SlowType type) {
         auto config = Config::GetSingleton();
 
+        // Determine skill tier
         int tier = 0;
         if (skillLevel <= 25) tier = 0;
         else if (skillLevel <= 50) tier = 1;
         else if (skillLevel <= 75) tier = 2;
         else tier = 3;
 
-        float mult = 1.0f;
+        // Get multiplier from config
+        float multiplier = 1.0f;
         switch (type) {
         case SlowType::Bow:
-            mult = config->bowMultipliers[tier];
+            multiplier = config->bowMultipliers[tier];
             break;
         case SlowType::Crossbow:
-            mult = config->crossbowMultipliers[tier];
+            multiplier = config->crossbowMultipliers[tier];
             break;
         case SlowType::CastLeft:
         case SlowType::CastRight:
-            mult = config->castMultipliers[tier];
+            multiplier = config->castMultipliers[tier];
             break;
         case SlowType::DualCast:
-            mult = config->dualCastMultipliers[tier];
+            multiplier = config->dualCastMultipliers[tier];
             break;
         }
 
-        return mult;
+        // Convert multiplier to magnitude
+        // multiplier 0.5 = 50% speed = need to REDUCE by 50 = magnitude 50
+        // multiplier 0.7 = 70% speed = need to REDUCE by 30 = magnitude 30
+        float magnitude = 100.0f - (multiplier * 100.0f);
+
+        logger::debug("Calculated magnitude: {} (multiplier: {}, tier: {})", magnitude, multiplier, tier);
+        return magnitude;
+    }
+
+    void SlowMotionManager::ApplySpellWithMagnitude(RE::Actor* actor, RE::SpellItem* spell, float magnitude) {
+        if (!actor || !spell) return;
+
+        // First, modify the spell's magnitude
+        if (spell->effects.size() > 0) {
+            auto& effect = spell->effects[0];
+            if (effect) {
+                effect->effectItem.magnitude = magnitude;
+                logger::debug("Set spell effect magnitude to {}", effect->effectItem.magnitude);
+            }
+        }
+
+        // Cast the spell on the actor
+        auto caster = actor->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
+        if (caster) {
+            caster->CastSpellImmediate(
+                spell,                    // spell
+                false,                    // no hit effect art
+                actor,                    // target
+                1.0f,                     // effectiveness
+                false,                    // hostile effectiveness only
+                magnitude,                // magnitude override
+                nullptr                   // blame actor
+            );
+            logger::debug("Cast spell {} on actor", spell->GetName());
+        } else {
+            logger::warn("Failed to get magic caster for actor");
+        }
+    }
+
+    void SlowMotionManager::RemoveSpell(RE::Actor* actor, RE::SpellItem* spell) {
+        if (!actor || !spell) return;
+
+        // Dispel the effect
+        auto magicTarget = actor->GetMagicTarget();
+        if (magicTarget) {
+            // Get a null handle for the caster
+            RE::BSPointerHandle<RE::Actor> nullHandle;
+            magicTarget->DispelEffect(spell, nullHandle);
+            logger::debug("Dispelled spell {} from actor", spell->GetName());
+        }
     }
 }

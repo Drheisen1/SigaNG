@@ -18,9 +18,9 @@ namespace SIGA {
         CombatEventHandler() = default;
         CombatEventHandler(const CombatEventHandler&) = delete;
         CombatEventHandler(CombatEventHandler&&) = delete;
-        ~CombatEventHandler() = default;  
+        ~CombatEventHandler() = default;
 
-        std::unordered_set<RE::FormID> registeredNPCs;  
+        std::unordered_set<RE::FormID> registeredNPCs;
         std::mutex registrationMutex;
     };
 }

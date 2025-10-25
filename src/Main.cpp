@@ -1,4 +1,5 @@
-﻿#include "SIGA/AnimationHandler.h"
+﻿#include "SKSE/SKSE.h"
+#include "SIGA/AnimationHandler.h"
 #include "SIGA/CombatEventHandler.h"  
 #include "SIGA/SlowMotion.h"
 #include "SIGA/Config.h"
@@ -112,9 +113,11 @@ namespace {
         case SKSE::MessagingInterface::kDataLoaded:
         {
             logger::debug("kDataLoaded message received");
-            SIGA::Config::GetSingleton()->Load();
-            spdlog::set_level(static_cast<spdlog::level::level_enum>(SIGA::Config::GetSingleton()->logLevel));
-            logger::info("Configuration loaded");
+
+            // Initialize spell manager
+            if (!SIGA::SlowMotionManager::GetSingleton()->Initialize()) {
+                logger::error("Failed to initialize SlowMotionManager - debuff spells not loaded!");
+            }
 
             // Register input event handler for player
             if (auto inputManager = RE::BSInputDeviceManager::GetSingleton()) {
@@ -157,6 +160,11 @@ namespace {
 extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
 {
     InitializeLog();
+
+    // Load config early to set log level
+    SIGA::Config::GetSingleton()->Load();
+    spdlog::set_level(static_cast<spdlog::level::level_enum>(SIGA::Config::GetSingleton()->logLevel));
+
     logger::info("{} v{} loading...", PLUGIN_NAME, PLUGIN_VERSION.string());
 
     SKSE::Init(a_skse);

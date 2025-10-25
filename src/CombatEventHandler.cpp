@@ -29,7 +29,7 @@ namespace SIGA {
         }
 
         // Check if entering combat
-        if (a_event->newState.underlying() == 1) {  
+        if (a_event->newState.underlying() == 1) {
             std::lock_guard<std::mutex> lock(registrationMutex);
 
             auto formID = actor->GetFormID();
@@ -53,4 +53,4 @@ namespace SIGA {
         return RE::BSEventNotifyControl::kContinue;
     }
 
-} 
+}

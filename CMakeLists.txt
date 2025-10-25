@@ -23,7 +23,7 @@ add_library(
     src/CombatEventHandler.cpp
     src/SlowMotion.cpp
     src/Config.cpp
-)
+   )
 
 target_include_directories(
     ${PROJECT_NAME}
